@@ -137,31 +137,31 @@ export const apiService = {
         },
         body: JSON.stringify(request),
         // Agregar timeout para detectar rápido si no hay backend
-        signal: createTimeoutSignal(3000),
+        signal: createTimeoutSignal(2000),
+      }).catch(() => {
+        // Si hay error de red, devolver null para usar fallback
+        return null;
       });
 
-      if (!response.ok) {
-        // Si hay error pero no es 404, intentar leer JSON
-        const contentType = response.headers.get('content-type');
-        if (contentType && contentType.includes('application/json')) {
-          const error = await response.json();
-          throw new Error(error.message || 'Error al generar con IA');
+      if (!response || !response.ok) {
+        // Si es 404 o cualquier error, usar fallback silenciosamente
+        if (response && response.status === 404) {
+          // Silencioso - es esperado cuando no hay backend
+          return generateHardcodedAI(request);
         }
-        // Si es 404 u otro error, usar fallback
-        console.warn('Backend no disponible, usando datos hardcodeados');
+        // Para otros errores, también usar fallback
         return generateHardcodedAI(request);
       }
 
-      const data = await response.json();
-      return data;
-    } catch (error: any) {
-      // Si es error de red, timeout, o 404, usar fallback
-      if (error.name === 'AbortError' || error.name === 'TypeError' || error.message.includes('404')) {
-        console.warn('Backend no disponible, usando datos hardcodeados:', error.message);
+      try {
+        const data = await response.json();
+        return data;
+      } catch (jsonError) {
+        // Si no se puede parsear JSON (ej: HTML de error), usar fallback
         return generateHardcodedAI(request);
       }
-      // Para otros errores, también usar fallback
-      console.warn('Error al conectar con backend, usando datos hardcodeados:', error.message);
+    } catch (error: any) {
+      // Cualquier error = usar fallback silenciosamente
       return generateHardcodedAI(request);
     }
   },
@@ -182,23 +182,18 @@ export const apiService = {
           size: file.size,
           type: file.type,
         }),
-        signal: createTimeoutSignal(3000),
-      });
+        signal: createTimeoutSignal(2000),
+      }).catch(() => null);
 
-      if (!response.ok) {
-        const contentType = response.headers.get('content-type');
-        if (contentType && contentType.includes('application/json')) {
-          const error = await response.json();
-          throw new Error(error.message || 'Error al subir archivo');
+      if (response && response.ok) {
+        try {
+          return await response.json();
+        } catch {
+          // Fall through to fallback
         }
-        // Fallback a datos hardcodeados
-        console.warn('Backend no disponible, simulando subida de archivo');
-      } else {
-        return await response.json();
       }
     } catch (error: any) {
-      // Si hay error, devolver metadatos hardcodeados
-      console.warn('Error al subir archivo, simulando:', error.message);
+      // Silencioso - usar fallback
     }
 
     // Fallback: devolver metadatos sin subir realmente
@@ -225,40 +220,36 @@ export const apiService = {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(session),
-        signal: createTimeoutSignal(3000),
-      });
+        signal: createTimeoutSignal(2000),
+      }).catch(() => null);
 
-      if (!response.ok) {
-        const contentType = response.headers.get('content-type');
-        if (contentType && contentType.includes('application/json')) {
-          const error = await response.json();
-          throw new Error(error.message || 'Error al guardar sesión');
+      if (response && response.ok) {
+        try {
+          return await response.json();
+        } catch {
+          // Fall through to localStorage
         }
-        // Fallback a localStorage
-        console.warn('Backend no disponible, guardando en localStorage');
-        throw new Error('Backend no disponible');
       }
-
-      return await response.json();
     } catch (error: any) {
-      // Fallback: usar localStorage
-      console.warn('Error al guardar sesión, usando localStorage:', error.message);
-      try {
-        const stored = localStorage.getItem('criteria_sessions');
-        const sessions = stored ? JSON.parse(stored) : [];
-        const existingIndex = sessions.findIndex((s: Session) => s.id === session.id);
-        
-        if (existingIndex >= 0) {
-          sessions[existingIndex] = session;
-        } else {
-          sessions.push(session);
-        }
-        
-        localStorage.setItem('criteria_sessions', JSON.stringify(sessions));
-        return session;
-      } catch (localError) {
-        throw new Error('No se pudo guardar la sesión (ni en backend ni en localStorage)');
+      // Silencioso - usar localStorage
+    }
+
+    // Fallback: usar localStorage
+    try {
+      const stored = localStorage.getItem('criteria_sessions');
+      const sessions = stored ? JSON.parse(stored) : [];
+      const existingIndex = sessions.findIndex((s: Session) => s.id === session.id);
+      
+      if (existingIndex >= 0) {
+        sessions[existingIndex] = session;
+      } else {
+        sessions.push(session);
       }
+      
+      localStorage.setItem('criteria_sessions', JSON.stringify(sessions));
+      return session;
+    } catch (localError) {
+      throw new Error('No se pudo guardar la sesión');
     }
   },
 
@@ -273,38 +264,41 @@ export const apiService = {
         headers: {
           'Content-Type': 'application/json',
         },
-        signal: createTimeoutSignal(3000),
-      });
+        signal: createTimeoutSignal(2000),
+      }).catch(() => null);
 
-      if (!response.ok) {
-        throw new Error('Backend no disponible');
+      if (response && response.ok) {
+        try {
+          return await response.json();
+        } catch {
+          // Fall through to localStorage
+        }
       }
-
-      return await response.json();
     } catch (error: any) {
-      // Fallback: usar localStorage
-      console.warn('Error al cargar sesiones, usando localStorage:', error.message);
-      try {
-        const stored = localStorage.getItem('criteria_sessions');
-        if (!stored) return [];
-        
-        const sessions = JSON.parse(stored) as Session[];
-        return sessions
-          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-          .map(session => ({
-            id: session.id,
-            nombre: session.nombre,
-            area: session.curriculum.area,
-            grado: session.curriculum.grado,
-            fecha: new Date(session.createdAt).toLocaleDateString('es-PE', {
-              day: 'numeric',
-              month: 'long',
-              year: 'numeric',
-            }),
-          }));
-      } catch (localError) {
-        return [];
-      }
+      // Silencioso - usar localStorage
+    }
+
+    // Fallback: usar localStorage
+    try {
+      const stored = localStorage.getItem('criteria_sessions');
+      if (!stored) return [];
+      
+      const sessions = JSON.parse(stored) as Session[];
+      return sessions
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .map(session => ({
+          id: session.id,
+          nombre: session.nombre,
+          area: session.curriculum.area,
+          grado: session.curriculum.grado,
+          fecha: new Date(session.createdAt).toLocaleDateString('es-PE', {
+            day: 'numeric',
+            month: 'long',
+            year: 'numeric',
+          }),
+        }));
+    } catch (localError) {
+      return [];
     }
   },
 
@@ -319,28 +313,31 @@ export const apiService = {
         headers: {
           'Content-Type': 'application/json',
         },
-        signal: createTimeoutSignal(3000),
-      });
+        signal: createTimeoutSignal(2000),
+      }).catch(() => null);
 
-      if (!response.ok) {
-        throw new Error('Backend no disponible');
+      if (response && response.ok) {
+        try {
+          return await response.json();
+        } catch {
+          // Fall through to localStorage
+        }
       }
-
-      return await response.json();
     } catch (error: any) {
-      // Fallback: usar localStorage
-      console.warn('Error al cargar sesión, usando localStorage:', error.message);
-      try {
-        const stored = localStorage.getItem('criteria_sessions');
-        if (!stored) throw new Error('Sesión no encontrada');
-        
-        const sessions = JSON.parse(stored) as Session[];
-        const session = sessions.find(s => s.id === id);
-        if (!session) throw new Error('Sesión no encontrada');
-        return session;
-      } catch (localError) {
-        throw new Error('No se encontró la sesión');
-      }
+      // Silencioso - usar localStorage
+    }
+
+    // Fallback: usar localStorage
+    try {
+      const stored = localStorage.getItem('criteria_sessions');
+      if (!stored) throw new Error('Sesión no encontrada');
+      
+      const sessions = JSON.parse(stored) as Session[];
+      const session = sessions.find(s => s.id === id);
+      if (!session) throw new Error('Sesión no encontrada');
+      return session;
+    } catch (localError) {
+      throw new Error('No se encontró la sesión');
     }
   },
 
@@ -355,26 +352,26 @@ export const apiService = {
         headers: {
           'Content-Type': 'application/json',
         },
-        signal: createTimeoutSignal(3000),
-      });
+        signal: createTimeoutSignal(2000),
+      }).catch(() => null);
 
-      if (!response.ok) {
-        throw new Error('Backend no disponible');
+      if (response && response.ok) {
+        return;
       }
-      return;
     } catch (error: any) {
-      // Fallback: usar localStorage
-      console.warn('Error al eliminar sesión, usando localStorage:', error.message);
-      try {
-        const stored = localStorage.getItem('criteria_sessions');
-        if (!stored) return;
-        
-        const sessions = JSON.parse(stored) as Session[];
-        const filtered = sessions.filter(s => s.id !== id);
-        localStorage.setItem('criteria_sessions', JSON.stringify(filtered));
-      } catch (localError) {
-        throw new Error('No se pudo eliminar la sesión');
-      }
+      // Silencioso - usar localStorage
+    }
+
+    // Fallback: usar localStorage
+    try {
+      const stored = localStorage.getItem('criteria_sessions');
+      if (!stored) return;
+      
+      const sessions = JSON.parse(stored) as Session[];
+      const filtered = sessions.filter(s => s.id !== id);
+      localStorage.setItem('criteria_sessions', JSON.stringify(filtered));
+    } catch (localError) {
+      throw new Error('No se pudo eliminar la sesión');
     }
   },
 
@@ -410,17 +407,21 @@ export const apiService = {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(request),
-        signal: createTimeoutSignal(5000),
-      });
+        signal: createTimeoutSignal(3000),
+      }).catch(() => null);
 
-      if (!response.ok) {
-        throw new Error('Backend no disponible');
+      if (response && response.ok) {
+        try {
+          return await response.json();
+        } catch {
+          // Fall through to fallback
+        }
       }
-
-      return await response.json();
     } catch (error: any) {
-      // Fallback: generar material básico hardcodeado
-      console.warn('Error al generar material, usando material básico:', error.message);
+      // Silencioso - usar fallback
+    }
+
+    // Fallback: generar material básico hardcodeado
       
       const criteriaText = request.criteria.map((c, i) => `${i + 1}. ${c.text}`).join('\n');
       
@@ -468,21 +469,25 @@ export const apiService = {
         headers: {
           'Content-Type': 'application/json',
         },
-        signal: createTimeoutSignal(3000),
-      });
+        signal: createTimeoutSignal(2000),
+      }).catch(() => null);
 
-      if (!response.ok) {
-        throw new Error('Backend no disponible');
+      if (response && response.ok) {
+        try {
+          return await response.json();
+        } catch {
+          // Fall through to fallback
+        }
       }
-
-      return await response.json();
     } catch (error: any) {
-      // Fallback: devolver estado por defecto
-      return {
-        openaiAvailable: false,
-        message: 'Backend no disponible. Usando modo simulación.',
-      };
+      // Silencioso - usar fallback
     }
+
+    // Fallback: devolver estado por defecto
+    return {
+      openaiAvailable: false,
+      message: 'Backend no disponible. Usando modo simulación.',
+    };
   },
 };
 
