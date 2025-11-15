@@ -4,6 +4,8 @@ import type {
   Session,
   SessionListItem,
   UploadedFile,
+  MaterialGenerationRequest,
+  MaterialGenerationResponse,
 } from '@/types';
 
 const API_BASE_URL = '/api';
@@ -148,6 +150,44 @@ export const apiService = {
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.message || 'Error al exportar sesión');
+    }
+
+    return response.json();
+  },
+
+  /**
+   * Genera material educativo basado en los criterios
+   */
+  async generateMaterial(request: MaterialGenerationRequest): Promise<MaterialGenerationResponse> {
+    const response = await fetch(`${API_BASE_URL}/ai/generate-material`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.message || 'Error al generar material');
+    }
+
+    return response.json();
+  },
+
+  /**
+   * Verifica el estado de OpenAI
+   */
+  async getAIStatus(): Promise<{ openaiAvailable: boolean; message: string }> {
+    const response = await fetch(`${API_BASE_URL}/ai/status`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error('Error al verificar estado de IA');
     }
 
     return response.json();

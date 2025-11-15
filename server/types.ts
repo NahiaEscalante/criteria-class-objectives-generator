@@ -77,3 +77,20 @@ export interface SessionListItem {
   fecha: string;
 }
 
+// ===== MATERIAL GENERATION TYPES =====
+
+export type MaterialType = 'rubrica' | 'ejercicios' | 'guia' | 'ejemplos';
+
+export interface MaterialGenerationRequest {
+  criteria: EvaluationCriterion[];
+  curriculum: CurriculumSelection;
+  classInfo: ClassInformation;
+  materialType: MaterialType;
+}
+
+export interface MaterialGenerationResponse {
+  material: string; // Markdown content
+  materialType: MaterialType;
+  generatedAt: Date;
+}
+

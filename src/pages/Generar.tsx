@@ -7,11 +7,12 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AiBadge } from "@/components/AiBadge";
-import { Upload, FileText, Sparkles, Loader2, Check, Edit2, Save, Plus, Download, Copy, Bookmark, Video, Music, Image as ImageIcon } from "lucide-react";
+import { Upload, FileText, Sparkles, Loader2, Check, Edit2, Save, Plus, Download, Copy, Bookmark, Video, Music, Image as ImageIcon, FileCheck } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiService } from "@/lib/api";
-import type { Session, LearningObjective, EvaluationCriterion, UploadedFile, AiGenerationResponse, Resource, ResourceType } from "@/types";
+import type { Session, LearningObjective, EvaluationCriterion, UploadedFile, AiGenerationResponse, Resource, ResourceType, MaterialType, MaterialGenerationResponse } from "@/types";
 
 const Generar = () => {
   const { toast } = useToast();
@@ -48,6 +49,12 @@ const Generar = () => {
   const [editingObjetivo, setEditingObjetivo] = useState<number | null>(null);
   const [editingCriterio, setEditingCriterio] = useState<number | null>(null);
   const [editText, setEditText] = useState("");
+
+  // Material generation state
+  const [isGeneratingMaterial, setIsGeneratingMaterial] = useState(false);
+  const [generatedMaterial, setGeneratedMaterial] = useState<MaterialGenerationResponse | null>(null);
+  const [isMaterialDialogOpen, setIsMaterialDialogOpen] = useState(false);
+  const [selectedMaterialType, setSelectedMaterialType] = useState<MaterialType>('rubrica');
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -229,6 +236,62 @@ const Generar = () => {
         description: "No se pudo copiar al portapapeles",
         variant: "destructive",
       });
+    }
+  };
+
+  const handleGenerateMaterial = async () => {
+    if (!showResults || criterios.length === 0) {
+      toast({
+        title: "Error",
+        description: "Debes generar los criterios primero",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsGeneratingMaterial(true);
+    
+    try {
+      // Convertir criterios de string[] a EvaluationCriterion[]
+      const criteriaObjects: EvaluationCriterion[] = criterios.map((text, index) => ({
+        id: `crit-${Date.now()}-${index}`,
+        text,
+        order: index + 1,
+      }));
+
+      const response = await apiService.generateMaterial({
+        criteria: criteriaObjects,
+        curriculum: {
+          area: formData.area,
+          competencia: formData.competencia,
+          capacidad: formData.capacidad,
+          desempeno: formData.desempeno,
+          grado: formData.grado,
+        },
+        classInfo: {
+          producto: formData.producto,
+          evidencia: formData.evidencia,
+          contexto: formData.contexto,
+          objetivo: formData.objetivo || undefined,
+        },
+        materialType: selectedMaterialType,
+      });
+
+      setGeneratedMaterial(response);
+      setIsMaterialDialogOpen(true);
+      
+      toast({
+        title: "Material generado",
+        description: `Se generó ${selectedMaterialType === 'rubrica' ? 'la rúbrica' : selectedMaterialType === 'ejercicios' ? 'los ejercicios' : selectedMaterialType === 'guia' ? 'la guía' : 'los ejemplos'} exitosamente`,
+      });
+    } catch (error: any) {
+      toast({
+        title: "Error al generar material",
+        description: error.message || "No se pudo generar el material",
+        variant: "destructive",
+      });
+    } finally {
+      setIsGeneratingMaterial(false);
     }
   };
 
@@ -834,6 +897,41 @@ const Generar = () => {
 
                   {/* Actions */}
                   <div className="space-y-3 pt-4 border-t">
+                    {/* Generate Material Section */}
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium">Generar material educativo</Label>
+                      <div className="flex gap-2">
+                        <Select value={selectedMaterialType} onValueChange={(val) => setSelectedMaterialType(val as MaterialType)}>
+                          <SelectTrigger className="flex-1">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="rubrica">Rúbrica de evaluación</SelectItem>
+                            <SelectItem value="ejercicios">Ejercicios prácticos</SelectItem>
+                            <SelectItem value="guia">Guía de retroalimentación</SelectItem>
+                            <SelectItem value="ejemplos">Ejemplos de trabajos</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Button 
+                          onClick={handleGenerateMaterial}
+                          disabled={isGeneratingMaterial}
+                          className="flex-1"
+                        >
+                          {isGeneratingMaterial ? (
+                            <>
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              Generando...
+                            </>
+                          ) : (
+                            <>
+                              <FileCheck className="w-4 h-4 mr-2" />
+                              Generar material
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+
                     <Button className="w-full" onClick={handleDownloadPDF}>
                       <Download className="w-4 h-4 mr-2" />
                       Descargar PDF
@@ -855,6 +953,49 @@ const Generar = () => {
           </div>
         </div>
       </div>
+
+      {/* Material Dialog */}
+      <Dialog open={isMaterialDialogOpen} onOpenChange={setIsMaterialDialogOpen}>
+        <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {selectedMaterialType === 'rubrica' && 'Rúbrica de Evaluación'}
+              {selectedMaterialType === 'ejercicios' && 'Ejercicios Prácticos'}
+              {selectedMaterialType === 'guia' && 'Guía de Retroalimentación'}
+              {selectedMaterialType === 'ejemplos' && 'Ejemplos de Trabajos'}
+            </DialogTitle>
+            <DialogDescription>
+              Material generado basado en los criterios de evaluación
+            </DialogDescription>
+          </DialogHeader>
+          
+          {generatedMaterial && (
+            <div className="mt-4">
+              <div className="prose prose-sm max-w-none dark:prose-invert">
+                <pre className="whitespace-pre-wrap text-sm font-sans bg-muted/50 p-4 rounded-lg border overflow-x-auto">
+                  {generatedMaterial.material}
+                </pre>
+              </div>
+              
+              <div className="flex justify-end gap-2 mt-6 pt-4 border-t">
+                <Button variant="outline" onClick={() => {
+                  navigator.clipboard.writeText(generatedMaterial.material);
+                  toast({
+                    title: "Copiado",
+                    description: "El material se copió al portapapeles",
+                  });
+                }}>
+                  <Copy className="w-4 h-4 mr-2" />
+                  Copiar
+                </Button>
+                <Button onClick={() => setIsMaterialDialogOpen(false)}>
+                  Cerrar
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
