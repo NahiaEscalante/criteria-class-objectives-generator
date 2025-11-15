@@ -7,7 +7,7 @@ export const Navbar = () => {
       <div className="container mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex h-16 items-center justify-between">
           <Link to="/" className="flex items-center">
-            <img src={logo} alt="CriterIA" className="h-10" />
+            <img src={logo} alt="CriterIA" className="h-14 w-auto" />
           </Link>
           
           <div className="hidden md:flex items-center space-x-8">
