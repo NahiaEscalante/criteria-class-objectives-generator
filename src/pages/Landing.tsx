@@ -19,8 +19,7 @@ const Landing = () => {
               Criterios de evaluación claros, alineados a la currícula
             </h1>
             <p className="text-lg sm:text-xl text-muted-foreground mb-8 max-w-3xl mx-auto">
-              CriterIA te ayuda a transformar tu PPT de clase en objetivos de aprendizaje 
-              y criterios de evaluación claros, precisos y coherentes con la Currícula Nacional.
+            CriterIA te ayuda a crear objetivos de aprendizaje y criterios de evaluación claros, precisos y coherentes con la Currícula Nacional para tu sesión de clases.
             </p>
             <Button
               size="lg"
