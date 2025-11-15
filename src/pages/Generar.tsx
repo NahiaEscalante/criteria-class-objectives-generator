@@ -10,10 +10,13 @@ import { AiBadge } from "@/components/AiBadge";
 import { Upload, FileText, Sparkles, Loader2, Check, Edit2, Save, Plus, Download, Copy, Bookmark, Video, Music, Image as ImageIcon } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
+import { apiService } from "@/lib/api";
+import type { Session, LearningObjective, EvaluationCriterion, UploadedFile, AiGenerationResponse, Resource, ResourceType } from "@/types";
 
 const Generar = () => {
   const { toast } = useToast();
   const [fileName, setFileName] = useState("");
+  const [uploadedFile, setUploadedFile] = useState<UploadedFile | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [showResults, setShowResults] = useState(false);
   
@@ -31,39 +34,147 @@ const Generar = () => {
   });
 
   // Results state
-  const [objetivos, setObjetivos] = useState([
-    "Identificar y utilizar adjetivos descriptivos para caracterizar personas, objetos y lugares en textos escritos.",
-    "Producir textos descriptivos coherentes aplicando estructura textual apropiada para el grado.",
-    "Emplear vocabulario variado y preciso para enriquecer las descripciones en sus producciones escritas."
-  ]);
+  const [objetivos, setObjetivos] = useState<string[]>([]);
+  const [criterios, setCriterios] = useState<string[]>([]);
+  const [recursos, setRecursos] = useState({
+    videos: [] as Array<{ title: string; description: string }>,
+    audios: [] as Array<{ title: string; description: string }>,
+    imagenes: [] as Array<{ title: string; description: string }>,
+  });
 
-  const [criterios, setCriterios] = useState([
-    "El texto incluye al menos 5 adjetivos descriptivos variados y apropiados al contexto.",
-    "La descripción sigue una estructura clara: introducción, desarrollo con características físicas y emocionales, cierre.",
-    "Utiliza conectores textuales (además, también, por otro lado) para organizar las ideas.",
-    "Presenta ortografía adecuada en palabras de uso frecuente y respeta las normas de puntuación básicas."
-  ]);
+  // Validation errors
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   const [editingObjetivo, setEditingObjetivo] = useState<number | null>(null);
   const [editingCriterio, setEditingCriterio] = useState<number | null>(null);
   const [editText, setEditText] = useState("");
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       setFileName(file.name);
+      
+      // Subir archivo al backend (simulación)
+      try {
+        const result = await apiService.uploadFile(file);
+        setUploadedFile(result.file);
+        toast({
+          title: "Archivo subido",
+          description: "El archivo se subió correctamente",
+        });
+      } catch (error: any) {
+        toast({
+          title: "Error al subir archivo",
+          description: error.message || "No se pudo subir el archivo",
+          variant: "destructive",
+        });
+      }
     }
   };
 
-  const handleGenerate = () => {
+  const validateForm = (): boolean => {
+    const newErrors: Record<string, string> = {};
+
+    if (!formData.area) {
+      newErrors.area = "El área curricular es requerida";
+    }
+    if (!formData.competencia) {
+      newErrors.competencia = "La competencia es requerida";
+    }
+    if (!formData.capacidad) {
+      newErrors.capacidad = "La capacidad es requerida";
+    }
+    if (!formData.desempeno) {
+      newErrors.desempeno = "El desempeño esperado es requerido";
+    }
+    if (!formData.grado) {
+      newErrors.grado = "El grado es requerido";
+    }
+    if (!formData.producto.trim()) {
+      newErrors.producto = "El producto es requerido";
+    }
+    if (!formData.evidencia.trim()) {
+      newErrors.evidencia = "La evidencia es requerida";
+    }
+    if (!formData.contexto.trim()) {
+      newErrors.contexto = "El contexto es requerido";
+    }
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleGenerate = async () => {
+    if (!validateForm()) {
+      toast({
+        title: "Formulario incompleto",
+        description: "Por favor completa todos los campos requeridos",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setIsGenerating(true);
     setShowResults(false);
+    setErrors({});
     
-    // Simulate AI processing
-    setTimeout(() => {
-      setIsGenerating(false);
+    try {
+      // Llamar al endpoint de IA
+      const response = await apiService.generateAI({
+        curriculum: {
+          area: formData.area,
+          competencia: formData.competencia,
+          capacidad: formData.capacidad,
+          desempeno: formData.desempeno,
+          grado: formData.grado,
+        },
+        classInfo: {
+          producto: formData.producto,
+          evidencia: formData.evidencia,
+          contexto: formData.contexto,
+          objetivo: formData.objetivo || undefined,
+        },
+        fileId: uploadedFile?.id,
+      });
+
+      // Convertir respuesta al formato del componente
+      setObjetivos(response.objectives.map(obj => obj.text));
+      setCriterios(response.criteria.map(crit => crit.text));
+      
+      // Convertir recursos al formato esperado
+      const recursosData = {
+        videos: [] as Array<{ title: string; description: string }>,
+        audios: [] as Array<{ title: string; description: string }>,
+        imagenes: [] as Array<{ title: string; description: string }>,
+      };
+      
+      response.resources.forEach((resource: Resource) => {
+        const item = { title: resource.title, description: resource.description };
+        if (resource.type === 'video') {
+          recursosData.videos.push(item);
+        } else if (resource.type === 'audio') {
+          recursosData.audios.push(item);
+        } else if (resource.type === 'image') {
+          recursosData.imagenes.push(item);
+        }
+      });
+      
+      setRecursos(recursosData);
       setShowResults(true);
-    }, 2000);
+      
+      toast({
+        title: "Generación completada",
+        description: "Los objetivos y criterios han sido generados exitosamente",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Error al generar",
+        description: error.message || "No se pudieron generar los objetivos y criterios",
+        variant: "destructive",
+      });
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   const startEditObjetivo = (index: number) => {
@@ -94,25 +205,133 @@ const Generar = () => {
     setCriterios([...criterios, "Nuevo criterio..."]);
   };
 
-  const handleDownloadPDF = () => {
+  const handleDownloadPDF = async () => {
+    // Necesitamos el ID de la sesión, pero aún no está guardada
+    // Por ahora, solo mostramos el toast
+    // En el futuro, podríamos guardar primero y luego exportar
     toast({
       title: "PDF generado",
-      description: "Tu documento está listo para descargar",
+      description: "Tu documento está listo para descargar (simulación)",
     });
   };
 
-  const handleCopy = () => {
-    toast({
-      title: "Criterios copiados",
-      description: "Los criterios se copiaron al portapapeles",
-    });
+  const handleCopy = async () => {
+    try {
+      const texto = criterios.join("\n");
+      await navigator.clipboard.writeText(texto);
+      toast({
+        title: "Criterios copiados",
+        description: "Los criterios se copiaron al portapapeles",
+      });
+    } catch (error) {
+      toast({
+        title: "Error al copiar",
+        description: "No se pudo copiar al portapapeles",
+        variant: "destructive",
+      });
+    }
   };
 
-  const handleSave = () => {
-    toast({
-      title: "Guardado exitoso",
-      description: "La sesión se guardó en tu historial",
-    });
+  const handleSave = async () => {
+    if (!showResults || objetivos.length === 0 || criterios.length === 0) {
+      toast({
+        title: "Error al guardar",
+        description: "Debes generar los objetivos y criterios primero",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const sessionId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      const now = new Date();
+
+      // Convertir objetivos y criterios al formato correcto
+      const learningObjectives: LearningObjective[] = objetivos.map((text, index) => ({
+        id: `${sessionId}-obj-${index}`,
+        text,
+        order: index + 1,
+      }));
+
+      const evaluationCriteria: EvaluationCriterion[] = criterios.map((text, index) => ({
+        id: `${sessionId}-crit-${index}`,
+        text,
+        order: index + 1,
+      }));
+
+      // Generar nombre de sesión basado en el producto
+      const sessionName = formData.producto || `Sesión ${now.toLocaleDateString()}`;
+
+      // Convertir recursos al formato de Resource
+      const resources: Resource[] = [
+        ...recursos.videos.map((v, i) => ({
+          id: `${sessionId}-res-video-${i}`,
+          type: 'video' as ResourceType,
+          title: v.title,
+          description: v.description,
+        })),
+        ...recursos.audios.map((a, i) => ({
+          id: `${sessionId}-res-audio-${i}`,
+          type: 'audio' as ResourceType,
+          title: a.title,
+          description: a.description,
+        })),
+        ...recursos.imagenes.map((img, i) => ({
+          id: `${sessionId}-res-image-${i}`,
+          type: 'image' as ResourceType,
+          title: img.title,
+          description: img.description,
+        })),
+      ];
+
+      const session: Session = {
+        id: sessionId,
+        nombre: sessionName,
+        curriculum: {
+          area: formData.area,
+          competencia: formData.competencia,
+          capacidad: formData.capacidad,
+          desempeno: formData.desempeno,
+          grado: formData.grado,
+        },
+        classInfo: {
+          producto: formData.producto,
+          evidencia: formData.evidencia,
+          contexto: formData.contexto,
+          objetivo: formData.objetivo || undefined,
+        },
+        file: uploadedFile || (fileName
+          ? {
+              id: `${sessionId}-file`,
+              name: fileName,
+              size: 0,
+              type: "application/vnd.ms-powerpoint",
+              uploadedAt: now,
+            }
+          : undefined),
+        generation: {
+          objectives: learningObjectives,
+          criteria: evaluationCriteria,
+          resources: resources,
+          generatedAt: now,
+        },
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      await apiService.saveSession(session);
+      
+      toast({
+        title: "Guardado exitoso",
+        description: "La sesión se guardó en tu historial",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Error al guardar",
+        description: error.message || "No se pudo guardar la sesión",
+        variant: "destructive",
+      });
+    }
   };
 
   return (
@@ -194,8 +413,13 @@ const Generar = () => {
                   <div className="space-y-4">
                     <div>
                       <Label htmlFor="area">Área curricular</Label>
-                      <Select value={formData.area} onValueChange={(val) => setFormData({...formData, area: val})}>
-                        <SelectTrigger id="area">
+                      <Select value={formData.area} onValueChange={(val) => {
+                        setFormData({...formData, area: val});
+                        if (errors.area) {
+                          setErrors({...errors, area: ""});
+                        }
+                      }}>
+                        <SelectTrigger id="area" className={errors.area ? "border-destructive" : ""}>
                           <SelectValue placeholder="Selecciona un área" />
                         </SelectTrigger>
                         <SelectContent className="bg-popover">
@@ -205,12 +429,18 @@ const Generar = () => {
                           <SelectItem value="sociales">Ciencias Sociales</SelectItem>
                         </SelectContent>
                       </Select>
+                      {errors.area && <p className="text-sm text-destructive mt-1">{errors.area}</p>}
                     </div>
 
                     <div>
                       <Label htmlFor="competencia">Competencia</Label>
-                      <Select value={formData.competencia} onValueChange={(val) => setFormData({...formData, competencia: val})}>
-                        <SelectTrigger id="competencia">
+                      <Select value={formData.competencia} onValueChange={(val) => {
+                        setFormData({...formData, competencia: val});
+                        if (errors.competencia) {
+                          setErrors({...errors, competencia: ""});
+                        }
+                      }}>
+                        <SelectTrigger id="competencia" className={errors.competencia ? "border-destructive" : ""}>
                           <SelectValue placeholder="Selecciona una competencia" />
                         </SelectTrigger>
                         <SelectContent className="bg-popover">
@@ -219,12 +449,18 @@ const Generar = () => {
                           <SelectItem value="comunica">Se comunica oralmente</SelectItem>
                         </SelectContent>
                       </Select>
+                      {errors.competencia && <p className="text-sm text-destructive mt-1">{errors.competencia}</p>}
                     </div>
 
                     <div>
                       <Label htmlFor="capacidad">Capacidad</Label>
-                      <Select value={formData.capacidad} onValueChange={(val) => setFormData({...formData, capacidad: val})}>
-                        <SelectTrigger id="capacidad">
+                      <Select value={formData.capacidad} onValueChange={(val) => {
+                        setFormData({...formData, capacidad: val});
+                        if (errors.capacidad) {
+                          setErrors({...errors, capacidad: ""});
+                        }
+                      }}>
+                        <SelectTrigger id="capacidad" className={errors.capacidad ? "border-destructive" : ""}>
                           <SelectValue placeholder="Selecciona una capacidad" />
                         </SelectTrigger>
                         <SelectContent className="bg-popover">
@@ -233,12 +469,18 @@ const Generar = () => {
                           <SelectItem value="utiliza">Utiliza convenciones del lenguaje escrito</SelectItem>
                         </SelectContent>
                       </Select>
+                      {errors.capacidad && <p className="text-sm text-destructive mt-1">{errors.capacidad}</p>}
                     </div>
 
                     <div>
                       <Label htmlFor="desempeno">Desempeño esperado</Label>
-                      <Select value={formData.desempeno} onValueChange={(val) => setFormData({...formData, desempeno: val})}>
-                        <SelectTrigger id="desempeno">
+                      <Select value={formData.desempeno} onValueChange={(val) => {
+                        setFormData({...formData, desempeno: val});
+                        if (errors.desempeno) {
+                          setErrors({...errors, desempeno: ""});
+                        }
+                      }}>
+                        <SelectTrigger id="desempeno" className={errors.desempeno ? "border-destructive" : ""}>
                           <SelectValue placeholder="Selecciona un desempeño" />
                         </SelectTrigger>
                         <SelectContent className="bg-popover">
@@ -247,12 +489,18 @@ const Generar = () => {
                           <SelectItem value="d3">Utiliza recursos ortográficos básicos</SelectItem>
                         </SelectContent>
                       </Select>
+                      {errors.desempeno && <p className="text-sm text-destructive mt-1">{errors.desempeno}</p>}
                     </div>
 
                     <div>
                       <Label htmlFor="grado">Grado y nivel</Label>
-                      <Select value={formData.grado} onValueChange={(val) => setFormData({...formData, grado: val})}>
-                        <SelectTrigger id="grado">
+                      <Select value={formData.grado} onValueChange={(val) => {
+                        setFormData({...formData, grado: val});
+                        if (errors.grado) {
+                          setErrors({...errors, grado: ""});
+                        }
+                      }}>
+                        <SelectTrigger id="grado" className={errors.grado ? "border-destructive" : ""}>
                           <SelectValue placeholder="Selecciona el grado" />
                         </SelectTrigger>
                         <SelectContent className="bg-popover">
@@ -262,6 +510,7 @@ const Generar = () => {
                           <SelectItem value="1s">1ro de Secundaria</SelectItem>
                         </SelectContent>
                       </Select>
+                      {errors.grado && <p className="text-sm text-destructive mt-1">{errors.grado}</p>}
                     </div>
                   </div>
                 </div>
@@ -286,8 +535,15 @@ const Generar = () => {
                         id="producto"
                         placeholder="Ej: Texto descriptivo, Afiche informativo"
                         value={formData.producto}
-                        onChange={(e) => setFormData({...formData, producto: e.target.value})}
+                        onChange={(e) => {
+                          setFormData({...formData, producto: e.target.value});
+                          if (errors.producto) {
+                            setErrors({...errors, producto: ""});
+                          }
+                        }}
+                        className={errors.producto ? "border-destructive" : ""}
                       />
+                      {errors.producto && <p className="text-sm text-destructive mt-1">{errors.producto}</p>}
                     </div>
 
                     <div>
@@ -296,9 +552,16 @@ const Generar = () => {
                         id="evidencia"
                         placeholder="Ej: Producción escrita individual de una página"
                         value={formData.evidencia}
-                        onChange={(e) => setFormData({...formData, evidencia: e.target.value})}
+                        onChange={(e) => {
+                          setFormData({...formData, evidencia: e.target.value});
+                          if (errors.evidencia) {
+                            setErrors({...errors, evidencia: ""});
+                          }
+                        }}
                         rows={3}
+                        className={errors.evidencia ? "border-destructive" : ""}
                       />
+                      {errors.evidencia && <p className="text-sm text-destructive mt-1">{errors.evidencia}</p>}
                     </div>
 
                     <div>
@@ -307,9 +570,16 @@ const Generar = () => {
                         id="contexto"
                         placeholder="Ej: Estudiantes de 4to de primaria de escuela pública, nivel heterogéneo..."
                         value={formData.contexto}
-                        onChange={(e) => setFormData({...formData, contexto: e.target.value})}
+                        onChange={(e) => {
+                          setFormData({...formData, contexto: e.target.value});
+                          if (errors.contexto) {
+                            setErrors({...errors, contexto: ""});
+                          }
+                        }}
                         rows={4}
+                        className={errors.contexto ? "border-destructive" : ""}
                       />
+                      {errors.contexto && <p className="text-sm text-destructive mt-1">{errors.contexto}</p>}
                     </div>
 
                     <div>
@@ -485,85 +755,79 @@ const Generar = () => {
                         </TabsTrigger>
                       </TabsList>
                       <TabsContent value="videos" className="space-y-3">
-                        <Card className="p-4">
-                          <div className="flex items-start gap-3">
-                            <div className="w-10 h-10 bg-secondary/10 rounded flex items-center justify-center flex-shrink-0">
-                              <Video className="w-5 h-5 text-secondary" />
-                            </div>
-                            <div>
-                              <h4 className="text-sm font-medium text-foreground">
-                                Los adjetivos descriptivos
-                              </h4>
-                              <p className="text-xs text-muted-foreground mt-1">
-                                Video educativo que explica el uso de adjetivos calificativos
-                              </p>
-                            </div>
-                          </div>
-                        </Card>
-                        <Card className="p-4">
-                          <div className="flex items-start gap-3">
-                            <div className="w-10 h-10 bg-secondary/10 rounded flex items-center justify-center flex-shrink-0">
-                              <Video className="w-5 h-5 text-secondary" />
-                            </div>
-                            <div>
-                              <h4 className="text-sm font-medium text-foreground">
-                                Estructura del texto descriptivo
-                              </h4>
-                              <p className="text-xs text-muted-foreground mt-1">
-                                Tutorial sobre cómo organizar una descripción
-                              </p>
-                            </div>
-                          </div>
-                        </Card>
+                        {recursos.videos.length > 0 ? (
+                          recursos.videos.map((video, index) => (
+                            <Card key={index} className="p-4">
+                              <div className="flex items-start gap-3">
+                                <div className="w-10 h-10 bg-secondary/10 rounded flex items-center justify-center flex-shrink-0">
+                                  <Video className="w-5 h-5 text-secondary" />
+                                </div>
+                                <div>
+                                  <h4 className="text-sm font-medium text-foreground">
+                                    {video.title}
+                                  </h4>
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    {video.description}
+                                  </p>
+                                </div>
+                              </div>
+                            </Card>
+                          ))
+                        ) : (
+                          <p className="text-sm text-muted-foreground text-center py-4">
+                            No hay videos sugeridos
+                          </p>
+                        )}
                       </TabsContent>
                       <TabsContent value="audios" className="space-y-3">
-                        <Card className="p-4">
-                          <div className="flex items-start gap-3">
-                            <div className="w-10 h-10 bg-secondary/10 rounded flex items-center justify-center flex-shrink-0">
-                              <Music className="w-5 h-5 text-secondary" />
-                            </div>
-                            <div>
-                              <h4 className="text-sm font-medium text-foreground">
-                                Podcast: Escribir descripciones vívidas
-                              </h4>
-                              <p className="text-xs text-muted-foreground mt-1">
-                                Audio con ejemplos prácticos para el aula
-                              </p>
-                            </div>
-                          </div>
-                        </Card>
+                        {recursos.audios.length > 0 ? (
+                          recursos.audios.map((audio, index) => (
+                            <Card key={index} className="p-4">
+                              <div className="flex items-start gap-3">
+                                <div className="w-10 h-10 bg-secondary/10 rounded flex items-center justify-center flex-shrink-0">
+                                  <Music className="w-5 h-5 text-secondary" />
+                                </div>
+                                <div>
+                                  <h4 className="text-sm font-medium text-foreground">
+                                    {audio.title}
+                                  </h4>
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    {audio.description}
+                                  </p>
+                                </div>
+                              </div>
+                            </Card>
+                          ))
+                        ) : (
+                          <p className="text-sm text-muted-foreground text-center py-4">
+                            No hay audios sugeridos
+                          </p>
+                        )}
                       </TabsContent>
                       <TabsContent value="imagenes" className="space-y-3">
-                        <Card className="p-4">
-                          <div className="flex items-start gap-3">
-                            <div className="w-10 h-10 bg-secondary/10 rounded flex items-center justify-center flex-shrink-0">
-                              <ImageIcon className="w-5 h-5 text-secondary" />
-                            </div>
-                            <div>
-                              <h4 className="text-sm font-medium text-foreground">
-                                Infografía de adjetivos
-                              </h4>
-                              <p className="text-xs text-muted-foreground mt-1">
-                                Material visual con clasificación de adjetivos
-                              </p>
-                            </div>
-                          </div>
-                        </Card>
-                        <Card className="p-4">
-                          <div className="flex items-start gap-3">
-                            <div className="w-10 h-10 bg-secondary/10 rounded flex items-center justify-center flex-shrink-0">
-                              <ImageIcon className="w-5 h-5 text-secondary" />
-                            </div>
-                            <div>
-                              <h4 className="text-sm font-medium text-foreground">
-                                Ejemplo de ficha descriptiva
-                              </h4>
-                              <p className="text-xs text-muted-foreground mt-1">
-                                Modelo para que los estudiantes tomen de referencia
-                              </p>
-                            </div>
-                          </div>
-                        </Card>
+                        {recursos.imagenes.length > 0 ? (
+                          recursos.imagenes.map((imagen, index) => (
+                            <Card key={index} className="p-4">
+                              <div className="flex items-start gap-3">
+                                <div className="w-10 h-10 bg-secondary/10 rounded flex items-center justify-center flex-shrink-0">
+                                  <ImageIcon className="w-5 h-5 text-secondary" />
+                                </div>
+                                <div>
+                                  <h4 className="text-sm font-medium text-foreground">
+                                    {imagen.title}
+                                  </h4>
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    {imagen.description}
+                                  </p>
+                                </div>
+                              </div>
+                            </Card>
+                          ))
+                        ) : (
+                          <p className="text-sm text-muted-foreground text-center py-4">
+                            No hay imágenes sugeridas
+                          </p>
+                        )}
                       </TabsContent>
                     </Tabs>
                   </div>
