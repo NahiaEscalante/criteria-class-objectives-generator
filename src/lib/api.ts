@@ -422,40 +422,38 @@ export const apiService = {
     }
 
     // Fallback: generar material básico hardcodeado
-      
-      const criteriaText = request.criteria.map((c, i) => `${i + 1}. ${c.text}`).join('\n');
-      
-      let material = '';
-      const title = `# ${request.materialType === 'rubrica' ? 'Rúbrica de Evaluación' : 
-                     request.materialType === 'ejercicios' ? 'Ejercicios Prácticos' :
-                     request.materialType === 'guia' ? 'Guía de Retroalimentación' : 
-                     'Ejemplos de Trabajos'}\n\n`;
-      
-      material += title;
-      material += `## ${request.classInfo.producto}\n\n`;
-      material += `**Área:** ${request.curriculum.area}  \n`;
-      material += `**Grado:** ${request.curriculum.grado}\n\n`;
-      material += `### Criterios de Evaluación\n\n${criteriaText}\n\n`;
-      
-      if (request.materialType === 'rubrica') {
-        material += `### Niveles de Desempeño\n\n`;
-        material += `| Criterio | Inicio | En proceso | Logrado | Destacado |\n`;
-        material += `|----------|--------|------------|---------|-----------|\n`;
-        request.criteria.forEach((c, i) => {
-          material += `| ${i + 1}. ${c.text.substring(0, 40)}... | 1 punto | 2 puntos | 3 puntos | 4 puntos |\n`;
-        });
-      } else {
-        material += `### Contenido\n\n`;
-        material += `Este material ha sido generado automáticamente basado en los criterios de evaluación.\n\n`;
-        material += `**Nota:** Por favor, personaliza este material según las necesidades específicas de tu aula.\n`;
-      }
-      
-      return {
-        material,
-        materialType: request.materialType,
-        generatedAt: new Date(),
-      };
+    const criteriaText = request.criteria.map((c, i) => `${i + 1}. ${c.text}`).join('\n');
+    
+    let material = '';
+    const title = `# ${request.materialType === 'rubrica' ? 'Rúbrica de Evaluación' : 
+                   request.materialType === 'ejercicios' ? 'Ejercicios Prácticos' :
+                   request.materialType === 'guia' ? 'Guía de Retroalimentación' : 
+                   'Ejemplos de Trabajos'}\n\n`;
+    
+    material += title;
+    material += `## ${request.classInfo.producto}\n\n`;
+    material += `**Área:** ${request.curriculum.area}  \n`;
+    material += `**Grado:** ${request.curriculum.grado}\n\n`;
+    material += `### Criterios de Evaluación\n\n${criteriaText}\n\n`;
+    
+    if (request.materialType === 'rubrica') {
+      material += `### Niveles de Desempeño\n\n`;
+      material += `| Criterio | Inicio | En proceso | Logrado | Destacado |\n`;
+      material += `|----------|--------|------------|---------|-----------|\n`;
+      request.criteria.forEach((c, i) => {
+        material += `| ${i + 1}. ${c.text.substring(0, 40)}... | 1 punto | 2 puntos | 3 puntos | 4 puntos |\n`;
+      });
+    } else {
+      material += `### Contenido\n\n`;
+      material += `Este material ha sido generado automáticamente basado en los criterios de evaluación.\n\n`;
+      material += `**Nota:** Por favor, personaliza este material según las necesidades específicas de tu aula.\n`;
     }
+    
+    return {
+      material,
+      materialType: request.materialType,
+      generatedAt: new Date(),
+    };
   },
 
   /**
