@@ -2,10 +2,12 @@ import { Navbar } from "@/components/Navbar";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 import { Target, Clock, Users, FileText, Upload, Sparkles } from "lucide-react";
 
 const Landing = () => {
   const navigate = useNavigate();
+  const { isAuthenticated } = useAuth();
 
   return (
     <div className="min-h-screen bg-background">
@@ -21,14 +23,37 @@ const Landing = () => {
             <p className="text-lg sm:text-xl text-muted-foreground mb-8 max-w-3xl mx-auto">
             CriterIA te ayuda a crear objetivos de aprendizaje y criterios de evaluación claros, precisos y coherentes con la Currícula Nacional para tu sesión de clases.
             </p>
-            <Button
-              size="lg"
-              onClick={() => navigate("/generar")}
-              className="text-lg px-8 py-6 h-auto"
-            >
-              Comenzar a generar criterios
-              <Sparkles className="ml-2 h-5 w-5" />
-            </Button>
+            <div className="flex gap-4 justify-center">
+              {isAuthenticated ? (
+                <Button
+                  size="lg"
+                  onClick={() => navigate("/generar")}
+                  className="text-lg px-8 py-6 h-auto"
+                >
+                  Generar criterios
+                  <Sparkles className="ml-2 h-5 w-5" />
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    size="lg"
+                    variant="outline"
+                    onClick={() => navigate("/login")}
+                    className="text-lg px-8 py-6 h-auto"
+                  >
+                    Iniciar sesión
+                  </Button>
+                  <Button
+                    size="lg"
+                    onClick={() => navigate("/register")}
+                    className="text-lg px-8 py-6 h-auto"
+                  >
+                    Comenzar gratis
+                    <Sparkles className="ml-2 h-5 w-5" />
+                  </Button>
+                </>
+              )}
+            </div>
           </div>
         </div>
       </section>

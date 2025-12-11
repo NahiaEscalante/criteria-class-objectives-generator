@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Navbar } from "@/components/Navbar";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -38,10 +38,12 @@ const Generar = () => {
   const [objetivos, setObjetivos] = useState<string[]>([]);
   const [criterios, setCriterios] = useState<string[]>([]);
   const [recursos, setRecursos] = useState({
-    videos: [] as Array<{ title: string; description: string }>,
-    audios: [] as Array<{ title: string; description: string }>,
-    imagenes: [] as Array<{ title: string; description: string }>,
+    videos: [] as Array<Resource>,
+    audios: [] as Array<Resource>,
+    imagenes: [] as Array<Resource>,
   });
+  const [generationId, setGenerationId] = useState<string | null>(null);
+  const [resourcesGenerating, setResourcesGenerating] = useState(false);
 
   // Validation errors
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -148,26 +150,42 @@ const Generar = () => {
       setObjetivos(response.objectives.map(obj => obj.text));
       setCriterios(response.criteria.map(crit => crit.text));
       
-      // Convertir recursos al formato esperado
+      // Guardar generationId si existe (para polling de recursos)
+      if (response.generationId) {
+        setGenerationId(response.generationId);
+        setResourcesGenerating(response.resourcesGenerating || false);
+      }
+      
+      // Convertir recursos al formato esperado (ahora con URLs y estados)
       const recursosData = {
-        videos: [] as Array<{ title: string; description: string }>,
-        audios: [] as Array<{ title: string; description: string }>,
-        imagenes: [] as Array<{ title: string; description: string }>,
+        videos: [] as Array<Resource>,
+        audios: [] as Array<Resource>,
+        imagenes: [] as Array<Resource>,
       };
       
       response.resources.forEach((resource: Resource) => {
-        const item = { title: resource.title, description: resource.description };
+        // Validar estructura de cada recurso antes de procesarlo
+        if (!resource || !resource.id || !resource.type || !['video', 'audio', 'image'].includes(resource.type)) {
+          console.warn('Recurso con estructura inválida ignorado:', resource);
+          return;
+        }
+        
         if (resource.type === 'video') {
-          recursosData.videos.push(item);
+          recursosData.videos.push(resource);
         } else if (resource.type === 'audio') {
-          recursosData.audios.push(item);
+          recursosData.audios.push(resource);
         } else if (resource.type === 'image') {
-          recursosData.imagenes.push(item);
+          recursosData.imagenes.push(resource);
         }
       });
       
       setRecursos(recursosData);
       setShowResults(true);
+      
+      // Si hay recursos generándose, iniciar polling
+      if (response.resourcesGenerating && response.generationId) {
+        startResourcePolling(response.generationId);
+      }
       
       toast({
         title: "Generación completada",
@@ -295,6 +313,204 @@ const Generar = () => {
     }
   };
 
+  // Polling para verificar estado de recursos en generación
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const pollingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pollingRetryCountRef = useRef<number>(0);
+  const emptyResourcesCountRef = useRef<number>(0);
+  const MAX_RETRIES = 3;
+  const MAX_EMPTY_RESOURCES = 12; // Máximo 12 intentos (1 minuto) con recursos vacíos
+  const POLLING_INTERVAL = 5000; // 5 segundos
+
+  const stopPolling = () => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+    if (pollingTimeoutRef.current) {
+      clearTimeout(pollingTimeoutRef.current);
+      pollingTimeoutRef.current = null;
+    }
+    pollingRetryCountRef.current = 0;
+    emptyResourcesCountRef.current = 0;
+    setResourcesGenerating(false);
+  };
+
+  const startResourcePolling = async (genId: string) => {
+    // Limpiar polling anterior si existe
+    stopPolling();
+
+    // Validar que generationId sea válido
+    if (!genId || typeof genId !== 'string' || genId.trim() === '') {
+      toast({
+        title: "Error",
+        description: "ID de generación inválido",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setResourcesGenerating(true);
+    pollingRetryCountRef.current = 0;
+    emptyResourcesCountRef.current = 0;
+
+    const pollResources = async () => {
+      try {
+        const status = await apiService.getGenerationStatus(genId);
+        
+        // Validar estructura de respuesta
+        if (!status || !Array.isArray(status.resources)) {
+          throw new Error('Respuesta del servidor tiene un formato inválido');
+        }
+        
+        // Actualizar recursos con nuevos estados/URLs
+        const recursosData = {
+          videos: [] as Array<Resource>,
+          audios: [] as Array<Resource>,
+          imagenes: [] as Array<Resource>,
+        };
+        
+        status.resources.forEach((resource: Resource) => {
+          // Validar estructura de cada recurso
+          if (!resource || !resource.id || !resource.type || !['video', 'audio', 'image'].includes(resource.type)) {
+            console.warn('Recurso con estructura inválida:', resource);
+            return;
+          }
+          
+          if (resource.type === 'video') {
+            recursosData.videos.push(resource);
+          } else if (resource.type === 'audio') {
+            recursosData.audios.push(resource);
+          } else if (resource.type === 'image') {
+            recursosData.imagenes.push(resource);
+          }
+        });
+        
+        setRecursos(recursosData);
+        
+        // Resetear contador de reintentos en caso de éxito
+        pollingRetryCountRef.current = 0;
+        
+        // Si no hay recursos, el backend aún no ha iniciado la generación
+        // Continuar polling pero con límite de tiempo
+        if (status.resources.length === 0) {
+          emptyResourcesCountRef.current += 1;
+          
+          // Si después de MAX_EMPTY_RESOURCES intentos aún no hay recursos, detener polling
+          if (emptyResourcesCountRef.current >= MAX_EMPTY_RESOURCES) {
+            stopPolling();
+            toast({
+              title: "Tiempo de espera agotado",
+              description: "Los recursos no se han generado después de un minuto. Por favor, intenta generar nuevamente.",
+              variant: "destructive",
+            });
+            return;
+          }
+          
+          return;
+        }
+        
+        // Si hay recursos, resetear contador de recursos vacíos
+        emptyResourcesCountRef.current = 0;
+        
+        // Si todos los recursos están listos, detener polling
+        const allReady = status.resources.every(
+          (r: Resource) => r.status === 'ready' || r.status === 'error'
+        );
+        
+        if (allReady) {
+          stopPolling();
+          
+          toast({
+            title: "Recursos generados",
+            description: "Todos los recursos multimedia están listos",
+          });
+        }
+      } catch (error: any) {
+        console.error('Error polling resources:', error);
+        
+        // Manejar errores específicos
+        if (error.message?.includes('Generación no encontrada') || error.message?.includes('404')) {
+          // 404: Generación no existe, detener polling
+          stopPolling();
+          toast({
+            title: "Error",
+            description: "La generación de recursos no fue encontrada. Por favor, intenta generar nuevamente.",
+            variant: "destructive",
+          });
+          return;
+        }
+        
+        if (error.message?.includes('Sesión expirada') || error.message?.includes('401')) {
+          // 401: Token expirado, detener polling y redirigir
+          stopPolling();
+          toast({
+            title: "Sesión expirada",
+            description: "Por favor, inicia sesión nuevamente",
+            variant: "destructive",
+          });
+          // El handleAuthError ya redirige, pero por si acaso
+          setTimeout(() => {
+            window.location.href = '/login';
+          }, 2000);
+          return;
+        }
+        
+        // Otros errores: reintentar con backoff exponencial
+        pollingRetryCountRef.current += 1;
+        
+        if (pollingRetryCountRef.current >= MAX_RETRIES) {
+          // Máximo de reintentos alcanzado, detener polling
+          stopPolling();
+          toast({
+            title: "Error de conexión",
+            description: "No se pudo verificar el estado de los recursos. Por favor, recarga la página.",
+            variant: "destructive",
+          });
+          return;
+        }
+        
+        // Backoff exponencial: esperar más tiempo antes del siguiente intento
+        const backoffDelay = Math.min(POLLING_INTERVAL * Math.pow(2, pollingRetryCountRef.current), 30000);
+        console.log(`Reintentando en ${backoffDelay}ms (intento ${pollingRetryCountRef.current}/${MAX_RETRIES})`);
+        
+        // Detener el intervalo actual
+        if (pollingIntervalRef.current) {
+          clearInterval(pollingIntervalRef.current);
+          pollingIntervalRef.current = null;
+        }
+        
+        // Limpiar timeout anterior si existe
+        if (pollingTimeoutRef.current) {
+          clearTimeout(pollingTimeoutRef.current);
+        }
+        
+        // Reiniciar después del backoff
+        pollingTimeoutRef.current = setTimeout(() => {
+          pollingTimeoutRef.current = null;
+          if (pollingIntervalRef.current === null && pollingRetryCountRef.current < MAX_RETRIES) {
+            // Solo reiniciar si el polling no fue detenido manualmente y no se alcanzó el máximo de reintentos
+            pollingIntervalRef.current = setInterval(pollResources, POLLING_INTERVAL);
+            pollResources(); // Ejecutar inmediatamente
+          }
+        }, backoffDelay);
+      }
+    };
+
+    // Polling cada 5 segundos
+    pollingIntervalRef.current = setInterval(pollResources, POLLING_INTERVAL);
+    
+    // Primera verificación inmediata
+    pollResources();
+  };
+
+  // Limpiar polling al desmontar
+  useEffect(() => {
+    return () => {
+      stopPolling();
+    };
+  }, []);
+
   const handleSave = async () => {
     if (!showResults || objetivos.length === 0 || criterios.length === 0) {
       toast({
@@ -325,26 +541,11 @@ const Generar = () => {
       // Generar nombre de sesión basado en el producto
       const sessionName = formData.producto || `Sesión ${now.toLocaleDateString()}`;
 
-      // Convertir recursos al formato de Resource
+      // Convertir recursos al formato de Resource (ya están en formato correcto)
       const resources: Resource[] = [
-        ...recursos.videos.map((v, i) => ({
-          id: `${sessionId}-res-video-${i}`,
-          type: 'video' as ResourceType,
-          title: v.title,
-          description: v.description,
-        })),
-        ...recursos.audios.map((a, i) => ({
-          id: `${sessionId}-res-audio-${i}`,
-          type: 'audio' as ResourceType,
-          title: a.title,
-          description: a.description,
-        })),
-        ...recursos.imagenes.map((img, i) => ({
-          id: `${sessionId}-res-image-${i}`,
-          type: 'image' as ResourceType,
-          title: img.title,
-          description: img.description,
-        })),
+        ...recursos.videos,
+        ...recursos.audios,
+        ...recursos.imagenes,
       ];
 
       const session: Session = {
@@ -799,9 +1000,17 @@ const Generar = () => {
 
                   {/* Suggested Resources */}
                   <div>
-                    <h3 className="text-lg font-semibold text-foreground mb-3">
-                      Recursos sugeridos por IA
-                    </h3>
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-lg font-semibold text-foreground">
+                        Recursos sugeridos por IA
+                      </h3>
+                      {resourcesGenerating && (
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Generando recursos...</span>
+                        </div>
+                      )}
+                    </div>
                     <Tabs defaultValue="videos" className="w-full">
                       <TabsList className="grid w-full grid-cols-3">
                         <TabsTrigger value="videos">
@@ -819,19 +1028,79 @@ const Generar = () => {
                       </TabsList>
                       <TabsContent value="videos" className="space-y-3">
                         {recursos.videos.length > 0 ? (
-                          recursos.videos.map((video, index) => (
-                            <Card key={index} className="p-4">
-                              <div className="flex items-start gap-3">
-                                <div className="w-10 h-10 bg-secondary/10 rounded flex items-center justify-center flex-shrink-0">
-                                  <Video className="w-5 h-5 text-secondary" />
+                          recursos.videos.map((video) => (
+                            <Card key={video.id} className="p-4">
+                              {video.status === 'generating' && (
+                                <div className="flex items-center gap-3 mb-3">
+                                  <Loader2 className="w-5 h-5 text-secondary animate-spin" />
+                                  <div className="flex-1">
+                                    <p className="text-sm text-muted-foreground">
+                                      Generando video...
+                                    </p>
+                                    {video.progress !== undefined && (
+                                      <div className="w-full bg-muted rounded-full h-2 mt-2">
+                                        <div
+                                          className="bg-secondary h-2 rounded-full transition-all"
+                                          style={{ width: `${video.progress}%` }}
+                                        />
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
-                                <div>
+                              )}
+                              
+                              {video.status === 'ready' && video.url && (
+                                <div className="space-y-3">
+                                  <div className="relative w-full aspect-video bg-muted rounded-lg overflow-hidden">
+                                    <video
+                                      src={video.url}
+                                      controls
+                                      poster={video.thumbnail}
+                                      className="w-full h-full object-cover"
+                                    >
+                                      Tu navegador no soporta el elemento de video.
+                                    </video>
+                                  </div>
+                                  {video.duration && (
+                                    <p className="text-xs text-muted-foreground">
+                                      Duración: {Math.floor(video.duration / 60)}:{(video.duration % 60).toString().padStart(2, '0')}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                              
+                              {video.status === 'error' && (
+                                <div className="flex items-center gap-2 text-destructive mb-3">
+                                  <p className="text-sm">Error al generar video</p>
+                                  {video.error && (
+                                    <p className="text-xs text-muted-foreground">{video.error}</p>
+                                  )}
+                                </div>
+                              )}
+                              
+                              <div className="flex items-start gap-3">
+                                {!video.url && (
+                                  <div className="w-10 h-10 bg-secondary/10 rounded flex items-center justify-center flex-shrink-0">
+                                    <Video className="w-5 h-5 text-secondary" />
+                                  </div>
+                                )}
+                                <div className="flex-1">
                                   <h4 className="text-sm font-medium text-foreground">
                                     {video.title}
                                   </h4>
                                   <p className="text-xs text-muted-foreground mt-1">
                                     {video.description}
                                   </p>
+                                  {video.url && (
+                                    <a
+                                      href={video.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-xs text-primary hover:underline mt-2 inline-block"
+                                    >
+                                      Abrir en nueva pestaña
+                                    </a>
+                                  )}
                                 </div>
                               </div>
                             </Card>
@@ -844,19 +1113,76 @@ const Generar = () => {
                       </TabsContent>
                       <TabsContent value="audios" className="space-y-3">
                         {recursos.audios.length > 0 ? (
-                          recursos.audios.map((audio, index) => (
-                            <Card key={index} className="p-4">
-                              <div className="flex items-start gap-3">
-                                <div className="w-10 h-10 bg-secondary/10 rounded flex items-center justify-center flex-shrink-0">
-                                  <Music className="w-5 h-5 text-secondary" />
+                          recursos.audios.map((audio) => (
+                            <Card key={audio.id} className="p-4">
+                              {audio.status === 'generating' && (
+                                <div className="flex items-center gap-3 mb-3">
+                                  <Loader2 className="w-5 h-5 text-secondary animate-spin" />
+                                  <div className="flex-1">
+                                    <p className="text-sm text-muted-foreground">
+                                      Generando audio...
+                                    </p>
+                                    {audio.progress !== undefined && (
+                                      <div className="w-full bg-muted rounded-full h-2 mt-2">
+                                        <div
+                                          className="bg-secondary h-2 rounded-full transition-all"
+                                          style={{ width: `${audio.progress}%` }}
+                                        />
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
-                                <div>
+                              )}
+                              
+                              {audio.status === 'ready' && audio.url && (
+                                <div className="space-y-3 mb-3">
+                                  <audio
+                                    src={audio.url}
+                                    controls
+                                    className="w-full"
+                                  >
+                                    Tu navegador no soporta el elemento de audio.
+                                  </audio>
+                                  {audio.duration && (
+                                    <p className="text-xs text-muted-foreground">
+                                      Duración: {Math.floor(audio.duration / 60)}:{(audio.duration % 60).toString().padStart(2, '0')}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                              
+                              {audio.status === 'error' && (
+                                <div className="flex items-center gap-2 text-destructive mb-3">
+                                  <p className="text-sm">Error al generar audio</p>
+                                  {audio.error && (
+                                    <p className="text-xs text-muted-foreground">{audio.error}</p>
+                                  )}
+                                </div>
+                              )}
+                              
+                              <div className="flex items-start gap-3">
+                                {!audio.url && (
+                                  <div className="w-10 h-10 bg-secondary/10 rounded flex items-center justify-center flex-shrink-0">
+                                    <Music className="w-5 h-5 text-secondary" />
+                                  </div>
+                                )}
+                                <div className="flex-1">
                                   <h4 className="text-sm font-medium text-foreground">
                                     {audio.title}
                                   </h4>
                                   <p className="text-xs text-muted-foreground mt-1">
                                     {audio.description}
                                   </p>
+                                  {audio.url && (
+                                    <a
+                                      href={audio.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-xs text-primary hover:underline mt-2 inline-block"
+                                    >
+                                      Descargar audio
+                                    </a>
+                                  )}
                                 </div>
                               </div>
                             </Card>
@@ -869,19 +1195,70 @@ const Generar = () => {
                       </TabsContent>
                       <TabsContent value="imagenes" className="space-y-3">
                         {recursos.imagenes.length > 0 ? (
-                          recursos.imagenes.map((imagen, index) => (
-                            <Card key={index} className="p-4">
-                              <div className="flex items-start gap-3">
-                                <div className="w-10 h-10 bg-secondary/10 rounded flex items-center justify-center flex-shrink-0">
-                                  <ImageIcon className="w-5 h-5 text-secondary" />
+                          recursos.imagenes.map((imagen) => (
+                            <Card key={imagen.id} className="p-4">
+                              {imagen.status === 'generating' && (
+                                <div className="flex items-center gap-3 mb-3">
+                                  <Loader2 className="w-5 h-5 text-secondary animate-spin" />
+                                  <div className="flex-1">
+                                    <p className="text-sm text-muted-foreground">
+                                      Generando imagen...
+                                    </p>
+                                    {imagen.progress !== undefined && (
+                                      <div className="w-full bg-muted rounded-full h-2 mt-2">
+                                        <div
+                                          className="bg-secondary h-2 rounded-full transition-all"
+                                          style={{ width: `${imagen.progress}%` }}
+                                        />
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
-                                <div>
+                              )}
+                              
+                              {imagen.status === 'ready' && imagen.url && (
+                                <div className="mb-3">
+                                  <img
+                                    src={imagen.url}
+                                    alt={imagen.title}
+                                    className="w-full rounded-lg object-cover max-h-64"
+                                    loading="lazy"
+                                  />
+                                </div>
+                              )}
+                              
+                              {imagen.status === 'error' && (
+                                <div className="flex items-center gap-2 text-destructive mb-3">
+                                  <p className="text-sm">Error al generar imagen</p>
+                                  {imagen.error && (
+                                    <p className="text-xs text-muted-foreground">{imagen.error}</p>
+                                  )}
+                                </div>
+                              )}
+                              
+                              <div className="flex items-start gap-3">
+                                {!imagen.url && (
+                                  <div className="w-10 h-10 bg-secondary/10 rounded flex items-center justify-center flex-shrink-0">
+                                    <ImageIcon className="w-5 h-5 text-secondary" />
+                                  </div>
+                                )}
+                                <div className="flex-1">
                                   <h4 className="text-sm font-medium text-foreground">
                                     {imagen.title}
                                   </h4>
                                   <p className="text-xs text-muted-foreground mt-1">
                                     {imagen.description}
                                   </p>
+                                  {imagen.url && (
+                                    <a
+                                      href={imagen.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-xs text-primary hover:underline mt-2 inline-block"
+                                    >
+                                      Ver imagen completa
+                                    </a>
+                                  )}
                                 </div>
                               </div>
                             </Card>

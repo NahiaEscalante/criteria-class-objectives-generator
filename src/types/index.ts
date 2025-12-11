@@ -48,13 +48,19 @@ export interface EvaluationCriterion {
 }
 
 export type ResourceType = 'video' | 'audio' | 'image';
+export type ResourceStatus = 'pending' | 'generating' | 'ready' | 'error';
 
 export interface Resource {
   id: string;
   type: ResourceType;
   title: string;
   description: string;
-  url?: string;
+  url?: string;                    // URL del recurso generado (cuando esté listo)
+  status?: ResourceStatus;         // Estado de generación
+  thumbnail?: string;               // Miniatura para videos
+  duration?: number;               // Duración en segundos (videos/audios)
+  error?: string;                  // Mensaje de error si falla la generación
+  progress?: number;               // Progreso de generación (0-100)
 }
 
 export interface AiGenerationResponse {
@@ -62,6 +68,8 @@ export interface AiGenerationResponse {
   criteria: EvaluationCriterion[];
   resources: Resource[];
   generatedAt: Date;
+  generationId?: string;           // ID para rastrear generación asíncrona
+  resourcesGenerating?: boolean;   // Indica si los recursos se están generando en background
 }
 
 // ===== SESSION TYPES =====

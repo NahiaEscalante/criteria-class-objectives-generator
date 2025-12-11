@@ -6,9 +6,29 @@ import type {
   UploadedFile,
   MaterialGenerationRequest,
   MaterialGenerationResponse,
+  Resource,
 } from '@/types';
+import { getAuthHeaders, getAuthToken } from './auth';
+import { mockApiService, shouldUseMockData } from './mockService';
 
-const API_BASE_URL = '/api';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+
+/**
+ * Maneja errores de autenticación
+ * Si recibe 401, limpia datos y redirige a login
+ */
+function handleAuthError(response: Response | null) {
+  if (response && response.status === 401) {
+    // Limpiar datos de auth
+    localStorage.removeItem('criteria_auth_token');
+    localStorage.removeItem('criteria_auth_user');
+    
+    // Redirigir a login
+    window.location.href = '/login';
+    
+    throw new Error('Sesión expirada. Por favor, inicia sesión nuevamente.');
+  }
+}
 
 /**
  * Crea un AbortSignal con timeout (compatible con navegadores más antiguos)
@@ -24,468 +44,444 @@ function createTimeoutSignal(timeoutMs: number): AbortSignal {
 }
 
 /**
- * Genera datos hardcodeados cuando el backend no está disponible
+ * Valida la estructura de una respuesta de generación de IA
  */
-function generateHardcodedAI(request: AiGenerationRequest): AiGenerationResponse {
-  const baseId = `hardcoded-${Date.now()}`;
+function validateAiGenerationResponse(data: any): data is AiGenerationResponse {
+  if (!data || typeof data !== 'object') return false;
   
-  // Objetivos basados en el contexto
-  const objectives = [
-    {
-      id: `${baseId}-obj-1`,
-      text: `Identificar y aplicar recursos apropiados para producir ${request.classInfo.producto} coherentes y adecuados al contexto de ${request.curriculum.grado}.`,
-      order: 1,
-    },
-    {
-      id: `${baseId}-obj-2`,
-      text: `Aplicar estructura textual apropiada para ${request.classInfo.producto} según las convenciones del área de ${request.curriculum.area}.`,
-      order: 2,
-    },
-    {
-      id: `${baseId}-obj-3`,
-      text: `Emplear vocabulario variado y preciso en la producción de ${request.classInfo.producto} considerando el contexto: ${request.classInfo.contexto.substring(0, 50)}...`,
-      order: 3,
-    },
-  ];
+  // Validar objectives
+  if (!Array.isArray(data.objectives)) return false;
+  if (!data.objectives.every((obj: any) => 
+    obj && typeof obj.id === 'string' && typeof obj.text === 'string' && typeof obj.order === 'number'
+  )) return false;
+  
+  // Validar criteria
+  if (!Array.isArray(data.criteria)) return false;
+  if (!data.criteria.every((crit: any) => 
+    crit && typeof crit.id === 'string' && typeof crit.text === 'string' && typeof crit.order === 'number'
+  )) return false;
+  
+  // Validar resources
+  if (!Array.isArray(data.resources)) return false;
+  if (!data.resources.every((res: any) => 
+    res && typeof res.id === 'string' && typeof res.type === 'string' && 
+    ['video', 'audio', 'image'].includes(res.type) &&
+    typeof res.title === 'string' && typeof res.description === 'string'
+  )) return false;
+  
+  return true;
+}
 
-  // Criterios basados en el desempeño
-  const criteria = [
-    {
-      id: `${baseId}-crit-1`,
-      text: `El ${request.classInfo.producto} incluye recursos variados y apropiados al contexto de aprendizaje.`,
-      order: 1,
-    },
-    {
-      id: `${baseId}-crit-2`,
-      text: `La producción sigue una estructura clara y organizada: introducción, desarrollo con características relevantes, y cierre.`,
-      order: 2,
-    },
-    {
-      id: `${baseId}-crit-3`,
-      text: `Utiliza conectores textuales (además, también, por otro lado) para organizar las ideas de forma coherente.`,
-      order: 3,
-    },
-    {
-      id: `${baseId}-crit-4`,
-      text: `Presenta ortografía adecuada y respeta las normas básicas según el ${request.curriculum.grado}.`,
-      order: 4,
-    },
-    {
-      id: `${baseId}-crit-5`,
-      text: `La ${request.classInfo.evidencia} demuestra el logro de los aprendizajes esperados.`,
-      order: 5,
-    },
-  ];
-
-  // Recursos sugeridos
-  const resources = [
-    {
-      id: `${baseId}-res-video-1`,
-      type: 'video' as const,
-      title: `Cómo producir ${request.classInfo.producto}`,
-      description: `Video educativo que explica el proceso de producción de ${request.classInfo.producto} con ejemplos prácticos.`,
-    },
-    {
-      id: `${baseId}-res-video-2`,
-      type: 'video' as const,
-      title: `${request.curriculum.capacidad}: Estrategias y recursos`,
-      description: `Tutorial sobre cómo aplicar ${request.curriculum.capacidad} en producciones del área de ${request.curriculum.area}.`,
-    },
-    {
-      id: `${baseId}-res-audio-1`,
-      type: 'audio' as const,
-      title: `Podcast: Estrategias para ${request.classInfo.producto}`,
-      description: `Audio con ejemplos prácticos y consejos para desarrollar ${request.classInfo.producto} en el aula.`,
-    },
-    {
-      id: `${baseId}-res-image-1`,
-      type: 'image' as const,
-      title: `Infografía: Estructura de ${request.classInfo.producto}`,
-      description: `Material visual con la estructura y elementos clave para producir ${request.classInfo.producto}.`,
-    },
-    {
-      id: `${baseId}-res-image-2`,
-      type: 'image' as const,
-      title: `Ejemplo de ${request.classInfo.producto} para referencia`,
-      description: `Modelo o ejemplo de ${request.classInfo.producto} que los estudiantes pueden usar como referencia.`,
-    },
-  ];
-
-  return {
-    objectives,
-    criteria,
-    resources,
-    generatedAt: new Date(),
-  };
+/**
+ * Valida la estructura de una respuesta de estado de generación
+ */
+function validateGenerationStatusResponse(data: any): data is { resources: Resource[] } {
+  if (!data || typeof data !== 'object') return false;
+  if (!Array.isArray(data.resources)) return false;
+  
+  // Validar que cada recurso tenga la estructura mínima
+  if (!data.resources.every((res: any) => 
+    res && typeof res.id === 'string' && typeof res.type === 'string' &&
+    ['video', 'audio', 'image'].includes(res.type)
+  )) return false;
+  
+  return true;
 }
 
 /**
  * Servicio de API para comunicación con el backend
- * Con fallback a datos hardcodeados si el backend no está disponible
+ * Falla claramente cuando el backend no está disponible
  */
 export const apiService = {
   /**
    * Genera objetivos, criterios y recursos con IA
-   * Si el backend no está disponible, usa datos hardcodeados
+   * Requiere backend disponible
    */
   async generateAI(request: AiGenerationRequest): Promise<AiGenerationResponse> {
+    // Usar datos de prueba si está configurado explícitamente
+    if (shouldUseMockData()) {
+      return mockApiService.generateAI(request);
+    }
+
     try {
       const response = await fetch(`${API_BASE_URL}/ai/generate`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: getAuthHeaders(), // Incluir autenticación si está disponible
         body: JSON.stringify(request),
-        // Agregar timeout para detectar rápido si no hay backend
-        signal: createTimeoutSignal(2000),
-      }).catch(() => {
-        // Si hay error de red, devolver null para usar fallback
-        return null;
+        signal: createTimeoutSignal(30000), // 30 segundos para generación de IA
       });
 
-      if (!response || !response.ok) {
-        // Si es 404 o cualquier error, usar fallback silenciosamente
-        if (response && response.status === 404) {
-          // Silencioso - es esperado cuando no hay backend
-          return generateHardcodedAI(request);
-        }
-        // Para otros errores, también usar fallback
-        return generateHardcodedAI(request);
+      handleAuthError(response);
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ 
+          message: `Error del servidor: ${response.status} ${response.statusText}` 
+        }));
+        throw new Error(error.message || `Error al generar: ${response.status}`);
       }
 
-      try {
-        const data = await response.json();
-        return data;
-      } catch (jsonError) {
-        // Si no se puede parsear JSON (ej: HTML de error), usar fallback
-        return generateHardcodedAI(request);
+      const data = await response.json();
+      
+      // Validar estructura de respuesta
+      if (!validateAiGenerationResponse(data)) {
+        throw new Error('Respuesta del servidor tiene un formato inválido');
       }
+      
+      return data;
     } catch (error: any) {
-      // Cualquier error = usar fallback silenciosamente
-      return generateHardcodedAI(request);
+      // Si es un error de red o timeout, dar mensaje claro
+      if (error.name === 'AbortError' || error.message.includes('fetch')) {
+        throw new Error('No se pudo conectar con el servidor. Por favor, verifica que el backend esté disponible.');
+      }
+      throw error;
     }
   },
 
   /**
-   * Sube un archivo PPT (simulación)
-   * Si el backend no está disponible, devuelve metadatos hardcodeados
+   * Sube un archivo PPT
+   * Requiere backend disponible
    */
   async uploadFile(file: File): Promise<{ file: UploadedFile }> {
+    // Usar datos de prueba si está configurado explícitamente
+    if (shouldUseMockData()) {
+      return mockApiService.uploadFile(file);
+    }
+    
     try {
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const headers: HeadersInit = {};
+      const token = getAuthToken();
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      
       const response = await fetch(`${API_BASE_URL}/files/upload`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          name: file.name,
-          size: file.size,
-          type: file.type,
-        }),
-        signal: createTimeoutSignal(2000),
-      }).catch(() => null);
+        headers, // No incluir Content-Type - el navegador lo hace automáticamente para FormData
+        body: formData,
+        signal: createTimeoutSignal(10000), // Timeout más largo para uploads
+      });
 
-      if (response && response.ok) {
-        try {
-          return await response.json();
-        } catch {
-          // Fall through to fallback
-        }
+      handleAuthError(response);
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ 
+          message: `Error del servidor: ${response.status} ${response.statusText}` 
+        }));
+        throw new Error(error.message || `Error al subir archivo: ${response.status}`);
       }
-    } catch (error: any) {
-      // Silencioso - usar fallback
-    }
 
-    // Fallback: devolver metadatos sin subir realmente
-    return {
-      file: {
-        id: `file-${Date.now()}`,
-        name: file.name,
-        size: file.size,
-        type: file.type,
-        uploadedAt: new Date(),
-      },
-    };
+      return await response.json();
+    } catch (error: any) {
+      if (error.name === 'AbortError' || error.message.includes('fetch')) {
+        throw new Error('No se pudo conectar con el servidor. Por favor, verifica que el backend esté disponible.');
+      }
+      throw error;
+    }
   },
 
   /**
    * Guarda una sesión
-   * Si el backend no está disponible, usa localStorage como fallback
+   * Requiere backend disponible
    */
   async saveSession(session: Session): Promise<Session> {
+    // Usar datos de prueba si está configurado explícitamente
+    if (shouldUseMockData()) {
+      return mockApiService.saveSession(session);
+    }
+    
     try {
       const response = await fetch(`${API_BASE_URL}/sessions`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: getAuthHeaders(),
         body: JSON.stringify(session),
-        signal: createTimeoutSignal(2000),
-      }).catch(() => null);
+        signal: createTimeoutSignal(5000),
+      });
 
-      if (response && response.ok) {
-        try {
-          return await response.json();
-        } catch {
-          // Fall through to localStorage
-        }
+      handleAuthError(response);
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ 
+          message: `Error del servidor: ${response.status} ${response.statusText}` 
+        }));
+        throw new Error(error.message || `Error al guardar sesión: ${response.status}`);
       }
+
+      return await response.json();
     } catch (error: any) {
-      // Silencioso - usar localStorage
-    }
-
-    // Fallback: usar localStorage
-    try {
-      const stored = localStorage.getItem('criteria_sessions');
-      const sessions = stored ? JSON.parse(stored) : [];
-      const existingIndex = sessions.findIndex((s: Session) => s.id === session.id);
-      
-      if (existingIndex >= 0) {
-        sessions[existingIndex] = session;
-      } else {
-        sessions.push(session);
+      if (error.name === 'AbortError' || error.message.includes('fetch')) {
+        throw new Error('No se pudo conectar con el servidor. Por favor, verifica que el backend esté disponible.');
       }
-      
-      localStorage.setItem('criteria_sessions', JSON.stringify(sessions));
-      return session;
-    } catch (localError) {
-      throw new Error('No se pudo guardar la sesión');
+      throw error;
     }
   },
 
   /**
    * Obtiene la lista de sesiones (resumen)
-   * Si el backend no está disponible, usa localStorage como fallback
+   * Requiere backend disponible
    */
   async getSessionList(): Promise<SessionListItem[]> {
+    // Usar datos de prueba si está configurado explícitamente
+    if (shouldUseMockData()) {
+      return mockApiService.getSessionList();
+    }
+    
     try {
       const response = await fetch(`${API_BASE_URL}/sessions`, {
         method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        signal: createTimeoutSignal(2000),
-      }).catch(() => null);
+        headers: getAuthHeaders(),
+        signal: createTimeoutSignal(5000),
+      });
 
-      if (response && response.ok) {
-        try {
-          return await response.json();
-        } catch {
-          // Fall through to localStorage
-        }
-      }
-    } catch (error: any) {
-      // Silencioso - usar localStorage
-    }
+      handleAuthError(response);
 
-    // Fallback: usar localStorage
-    try {
-      const stored = localStorage.getItem('criteria_sessions');
-      if (!stored) return [];
-      
-      const sessions = JSON.parse(stored) as Session[];
-      return sessions
-        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-        .map(session => ({
-          id: session.id,
-          nombre: session.nombre,
-          area: session.curriculum.area,
-          grado: session.curriculum.grado,
-          fecha: new Date(session.createdAt).toLocaleDateString('es-PE', {
-            day: 'numeric',
-            month: 'long',
-            year: 'numeric',
-          }),
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ 
+          message: `Error del servidor: ${response.status} ${response.statusText}` 
         }));
-    } catch (localError) {
-      return [];
+        throw new Error(error.message || `Error al obtener sesiones: ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error: any) {
+      if (error.name === 'AbortError' || error.message.includes('fetch')) {
+        throw new Error('No se pudo conectar con el servidor. Por favor, verifica que el backend esté disponible.');
+      }
+      throw error;
     }
   },
 
   /**
    * Obtiene una sesión completa por ID
-   * Si el backend no está disponible, usa localStorage como fallback
+   * Requiere backend disponible
    */
   async getSessionById(id: string): Promise<Session> {
+    // Usar datos de prueba si está configurado explícitamente
+    if (shouldUseMockData()) {
+      return mockApiService.getSessionById(id);
+    }
+    
     try {
       const response = await fetch(`${API_BASE_URL}/sessions/${id}`, {
         method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        signal: createTimeoutSignal(2000),
-      }).catch(() => null);
+        headers: getAuthHeaders(),
+        signal: createTimeoutSignal(5000),
+      });
 
-      if (response && response.ok) {
-        try {
-          return await response.json();
-        } catch {
-          // Fall through to localStorage
+      handleAuthError(response);
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new Error('Sesión no encontrada');
         }
+        const error = await response.json().catch(() => ({ 
+          message: `Error del servidor: ${response.status} ${response.statusText}` 
+        }));
+        throw new Error(error.message || `Error al obtener sesión: ${response.status}`);
       }
-    } catch (error: any) {
-      // Silencioso - usar localStorage
-    }
 
-    // Fallback: usar localStorage
-    try {
-      const stored = localStorage.getItem('criteria_sessions');
-      if (!stored) throw new Error('Sesión no encontrada');
-      
-      const sessions = JSON.parse(stored) as Session[];
-      const session = sessions.find(s => s.id === id);
-      if (!session) throw new Error('Sesión no encontrada');
-      return session;
-    } catch (localError) {
-      throw new Error('No se encontró la sesión');
+      return await response.json();
+    } catch (error: any) {
+      if (error.name === 'AbortError' || error.message.includes('fetch')) {
+        throw new Error('No se pudo conectar con el servidor. Por favor, verifica que el backend esté disponible.');
+      }
+      throw error;
     }
   },
 
   /**
    * Elimina una sesión
-   * Si el backend no está disponible, usa localStorage como fallback
+   * Requiere backend disponible
    */
   async deleteSession(id: string): Promise<void> {
+    // Usar datos de prueba si está configurado explícitamente
+    if (shouldUseMockData()) {
+      return mockApiService.deleteSession(id);
+    }
+    
     try {
       const response = await fetch(`${API_BASE_URL}/sessions/${id}`, {
         method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        signal: createTimeoutSignal(2000),
-      }).catch(() => null);
+        headers: getAuthHeaders(),
+        signal: createTimeoutSignal(5000),
+      });
 
-      if (response && response.ok) {
-        return;
+      handleAuthError(response);
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new Error('Sesión no encontrada');
+        }
+        const error = await response.json().catch(() => ({ 
+          message: `Error del servidor: ${response.status} ${response.statusText}` 
+        }));
+        throw new Error(error.message || `Error al eliminar sesión: ${response.status}`);
       }
     } catch (error: any) {
-      // Silencioso - usar localStorage
-    }
-
-    // Fallback: usar localStorage
-    try {
-      const stored = localStorage.getItem('criteria_sessions');
-      if (!stored) return;
-      
-      const sessions = JSON.parse(stored) as Session[];
-      const filtered = sessions.filter(s => s.id !== id);
-      localStorage.setItem('criteria_sessions', JSON.stringify(filtered));
-    } catch (localError) {
-      throw new Error('No se pudo eliminar la sesión');
+      if (error.name === 'AbortError' || error.message.includes('fetch')) {
+        throw new Error('No se pudo conectar con el servidor. Por favor, verifica que el backend esté disponible.');
+      }
+      throw error;
     }
   },
 
   /**
-   * Exporta una sesión (simulación)
+   * Exporta una sesión
+   * Requiere backend disponible
    */
   async exportSession(id: string, format: 'pdf' | 'docx' = 'pdf'): Promise<{ downloadUrl: string }> {
-    const response = await fetch(`${API_BASE_URL}/sessions/${id}/export`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ format }),
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.message || 'Error al exportar sesión');
+    // Usar datos de prueba si está configurado explícitamente
+    if (shouldUseMockData()) {
+      return mockApiService.exportSession(id, format);
     }
+    
+    try {
+      const response = await fetch(`${API_BASE_URL}/sessions/${id}/export`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ format }),
+        signal: createTimeoutSignal(30000), // 30 segundos para exportación
+      });
 
-    return response.json();
+      handleAuthError(response);
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new Error('Sesión no encontrada');
+        }
+        const error = await response.json().catch(() => ({ 
+          message: `Error del servidor: ${response.status} ${response.statusText}` 
+        }));
+        throw new Error(error.message || `Error al exportar sesión: ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error: any) {
+      if (error.name === 'AbortError' || error.message.includes('fetch')) {
+        throw new Error('No se pudo conectar con el servidor. Por favor, verifica que el backend esté disponible.');
+      }
+      throw error;
+    }
   },
 
   /**
    * Genera material educativo basado en los criterios
-   * Si el backend no está disponible, genera material básico hardcodeado
+   * Requiere backend disponible
    */
   async generateMaterial(request: MaterialGenerationRequest): Promise<MaterialGenerationResponse> {
+    // Usar datos de prueba si está configurado explícitamente
+    if (shouldUseMockData()) {
+      return mockApiService.generateMaterial(request);
+    }
+    
     try {
       const response = await fetch(`${API_BASE_URL}/ai/generate-material`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: getAuthHeaders(), // Incluir autenticación si está disponible
         body: JSON.stringify(request),
-        signal: createTimeoutSignal(3000),
-      }).catch(() => null);
-
-      if (response && response.ok) {
-        try {
-          return await response.json();
-        } catch {
-          // Fall through to fallback
-        }
-      }
-    } catch (error: any) {
-      // Silencioso - usar fallback
-    }
-
-    // Fallback: generar material básico hardcodeado
-    const criteriaText = request.criteria.map((c, i) => `${i + 1}. ${c.text}`).join('\n');
-    
-    let material = '';
-    const title = `# ${request.materialType === 'rubrica' ? 'Rúbrica de Evaluación' : 
-                   request.materialType === 'ejercicios' ? 'Ejercicios Prácticos' :
-                   request.materialType === 'guia' ? 'Guía de Retroalimentación' : 
-                   'Ejemplos de Trabajos'}\n\n`;
-    
-    material += title;
-    material += `## ${request.classInfo.producto}\n\n`;
-    material += `**Área:** ${request.curriculum.area}  \n`;
-    material += `**Grado:** ${request.curriculum.grado}\n\n`;
-    material += `### Criterios de Evaluación\n\n${criteriaText}\n\n`;
-    
-    if (request.materialType === 'rubrica') {
-      material += `### Niveles de Desempeño\n\n`;
-      material += `| Criterio | Inicio | En proceso | Logrado | Destacado |\n`;
-      material += `|----------|--------|------------|---------|-----------|\n`;
-      request.criteria.forEach((c, i) => {
-        material += `| ${i + 1}. ${c.text.substring(0, 40)}... | 1 punto | 2 puntos | 3 puntos | 4 puntos |\n`;
+        signal: createTimeoutSignal(60000), // 60 segundos para generación con IA
       });
-    } else {
-      material += `### Contenido\n\n`;
-      material += `Este material ha sido generado automáticamente basado en los criterios de evaluación.\n\n`;
-      material += `**Nota:** Por favor, personaliza este material según las necesidades específicas de tu aula.\n`;
+
+      handleAuthError(response);
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ 
+          message: `Error del servidor: ${response.status} ${response.statusText}` 
+        }));
+        throw new Error(error.message || `Error al generar material: ${response.status}`);
+      }
+
+      return await response.json();
+    } catch (error: any) {
+      if (error.name === 'AbortError' || error.message.includes('fetch')) {
+        throw new Error('No se pudo conectar con el servidor. Por favor, verifica que el backend esté disponible.');
+      }
+      throw error;
+    }
+  },
+
+  /**
+   * Obtiene el estado de generación de recursos multimedia
+   * Útil cuando los recursos se generan en background
+   * Requiere backend disponible
+   */
+  async getGenerationStatus(generationId: string): Promise<{ resources: Resource[] }> {
+    // En modo mock, los recursos ya vienen listos en la respuesta inicial
+    // No hay necesidad de polling, pero devolvemos recursos vacíos para evitar errores
+    if (shouldUseMockData()) {
+      return { resources: [] };
     }
     
-    return {
-      material,
-      materialType: request.materialType,
-      generatedAt: new Date(),
-    };
+    try {
+      const response = await fetch(`${API_BASE_URL}/ai/generation-status/${generationId}`, {
+        method: 'GET',
+        headers: getAuthHeaders(),
+        signal: createTimeoutSignal(5000),
+      });
+
+      handleAuthError(response);
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new Error('Generación no encontrada');
+        }
+        const error = await response.json().catch(() => ({ 
+          message: `Error del servidor: ${response.status} ${response.statusText}` 
+        }));
+        throw new Error(error.message || `Error al obtener estado: ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      // Validar estructura de respuesta
+      if (!validateGenerationStatusResponse(data)) {
+        throw new Error('Respuesta del servidor tiene un formato inválido');
+      }
+      
+      return data;
+    } catch (error: any) {
+      if (error.name === 'AbortError' || error.message.includes('fetch')) {
+        throw new Error('No se pudo conectar con el servidor. Por favor, verifica que el backend esté disponible.');
+      }
+      throw error;
+    }
   },
 
   /**
    * Verifica el estado de OpenAI
-   * Si el backend no está disponible, devuelve estado por defecto
+   * Requiere backend disponible
    */
   async getAIStatus(): Promise<{ openaiAvailable: boolean; message: string }> {
+    // Usar datos de prueba si está configurado explícitamente
+    if (shouldUseMockData()) {
+      return mockApiService.getAIStatus();
+    }
+    
     try {
       const response = await fetch(`${API_BASE_URL}/ai/status`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
         },
-        signal: createTimeoutSignal(2000),
-      }).catch(() => null);
+        signal: createTimeoutSignal(5000),
+      });
 
-      if (response && response.ok) {
-        try {
-          return await response.json();
-        } catch {
-          // Fall through to fallback
-        }
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ 
+          message: `Error del servidor: ${response.status} ${response.statusText}` 
+        }));
+        throw new Error(error.message || `Error al verificar estado: ${response.status}`);
       }
-    } catch (error: any) {
-      // Silencioso - usar fallback
-    }
 
-    // Fallback: devolver estado por defecto
-    return {
-      openaiAvailable: false,
-      message: 'Backend no disponible. Usando modo simulación.',
-    };
+      return await response.json();
+    } catch (error: any) {
+      if (error.name === 'AbortError' || error.message.includes('fetch')) {
+        throw new Error('No se pudo conectar con el servidor. Por favor, verifica que el backend esté disponible.');
+      }
+      throw error;
+    }
   },
 };
 
